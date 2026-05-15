@@ -13,7 +13,7 @@ import sys
 import traceback
 
 
-MAX_ATTEMPTS_SERIAL_READ = 1500
+MAX_ATTEMPTS_SERIAL_READ = 3
 
 
 @dataclass
@@ -178,15 +178,15 @@ def turn_on_single(serial_no, address, group):
         time.sleep(cfg.read_delay)
 
 
-def get_serial_number_with_retries(module, address, group, num_retries=1500):
-    for attempt in range(num_retries):
+def get_serial_number_with_retries(module, address, group, num_retries=3):
+    for attempt in range(1, num_retries+1):
         serial_no = module.get_serial_number(address, group)
 
         if serial_no:  # If the serial number is successfully read
             return str(serial_no)
 
         # Log the attempt and wait before retrying
-        logging.error(f"Attempt {attempt + 1} failed, retrying...")
+        logging.error(f"Serial read {attempt=} failed, retrying...")
         time.sleep(cfg.read_delay)
     # If all attempts fail, return None or raise an exception
     logging.error(f"Failed to read serial number after {num_retries} attempts.")
@@ -373,7 +373,8 @@ def startup_sequence(
 
         serial_no = get_serial_number_with_retries(module, address, group)
         if serial_no is None:
-            raise ValueError(f"Failed to read serial num for {expected_serial_num}.")
+            logging.warning(f"Failed to read serial num for {expected_serial_num}, retrying startup...")
+            continue
         if serial_no != expected_serial_num:
             raise ValueError(f"{serial_no=} found. {expected_serial_num=}")
 
