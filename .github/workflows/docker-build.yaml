@@ -81,7 +81,7 @@ jobs:
           push: true
           platforms: linux/arm64,linux/amd64
           tags: |
-            ghcr.io/${{ env.REPO_OWNER }}/ha_uxr:latest
-            ghcr.io/${{ env.REPO_OWNER }}/ha_uxr:${{ env.VERSION }}
+            ghcr.io/${{ env.REPO_OWNER }}/ha-uxr:latest
+            ghcr.io/${{ env.REPO_OWNER }}/ha-uxr:${{ env.VERSION }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
