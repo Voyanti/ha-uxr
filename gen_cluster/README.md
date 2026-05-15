@@ -1,1 +1,0 @@
-# UXR - Python data retrieval
