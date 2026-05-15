@@ -44,7 +44,12 @@ class Config:
 
 
 def load_config() -> Config:
-    if os.path.exists("/data/options.json"):
+    env_path = os.environ.get("UXR_CONFIG_JSON")
+    if env_path and os.path.exists(env_path):
+        logging.info(f"Loading config from UXR_CONFIG_JSON={env_path}")
+        with open(env_path) as f:
+            cfg = Config.from_dict(json.load(f))
+    elif os.path.exists("/data/options.json"):
         logging.info("Loading options.json")
         with open("/data/options.json") as f:
             cfg = Config.from_dict(json.load(f))
