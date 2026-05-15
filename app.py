@@ -480,6 +480,8 @@ if __name__ == "__main__":
                 ]
 
                 alive = False
+                failed_reads = 0
+                too_many_failures = False
                 for getter, suffix, transform in readings:
                     value = read_publish(getter, suffix, serial_no, address, group, transform)
                     if value is not None:
@@ -489,6 +491,14 @@ if __name__ == "__main__":
                                 f"{cfg.mqtt_base_topic}/{serial_no}/power",
                                 1 if value > 0 else 0,
                             )
+                    else:
+                        failed_reads += 1
+                        if failed_reads > 2:
+                            logging.error(
+                                f"More than 2 failed reads for {serial_no}, short-circuiting to startup sequence"
+                            )
+                            too_many_failures = True
+                            break
                     time.sleep(cfg.read_delay)
 
                 client.publish(
@@ -497,7 +507,7 @@ if __name__ == "__main__":
                 client.publish(
                     f"{cfg.mqtt_base_topic}/{serial_no}/rated_power", rated_power
                 )
-                if alive:
+                if alive and not too_many_failures:
                     client.publish(
                         f"{cfg.mqtt_base_topic}_{serial_no}/availability", "online"
                     )
