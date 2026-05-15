@@ -1,7 +1,7 @@
 name: "Voyanti UXR"
 description: "Voyanti UXR"
 image: ghcr.io/voyanti/ha-uxr
-version: "1.0.3"
+version: "1.0.4"
 slug: "ha_uxr"
 url: "https://github.com/Voyanti/ha-uxr"
 init: false
