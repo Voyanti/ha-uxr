@@ -105,7 +105,7 @@ def on_message(client, userdata, msg):
                 payload = float(msg.payload.decode())
                 percentage = payload / rated_current
                 logging.info("Current limit set: {} for {}%".format(percentage, serial_no))
-                module.set_current_limit(percentage, address, group)
+                module.set_current_limit_fraction(percentage, address, group)
             elif topic == f"{MQTT_BASE_TOPIC}/{serial_no}/set/current":
                 payload = float(msg.payload.decode())
                 module.set_output_current(payload, address, group)
@@ -201,7 +201,7 @@ for uxr_module in UXR_MODULES:
     logging.info(f"Rated Output Current: {rated_current} A")
 
     # Set defaults
-    module.set_current_limit(DEFAULT_CURRENT/rated_current, address, group)
+    module.set_current_limit_fraction(DEFAULT_CURRENT/rated_current, address, group)
     time.sleep(READ_DELAY)
     logging.info(f"Setting default voltage for {serial_no} to {DEFAULT_VOLTAGE}V")
     module.set_output_voltage(DEFAULT_VOLTAGE, address, group)

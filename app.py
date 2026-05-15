@@ -2,7 +2,7 @@ import time
 import os
 import json
 from dataclasses import dataclass
-from typing import Any
+
 import yaml
 import atexit
 import paho.mqtt.client as mqtt
@@ -11,6 +11,15 @@ import threading
 import logging
 import sys
 import traceback
+
+
+MAX_ATTEMPTS_SERIAL_READ = 1500
+
+
+@dataclass
+class DeviceConfig:
+    rated_power: float | None
+    rated_current: float | None
 
 
 @dataclass
@@ -34,6 +43,21 @@ class Config:
         return cls(**{k: d[k] for k in cls.__dataclass_fields__})
 
 
+def load_config() -> Config:
+    if os.path.exists("/data/options.json"):
+        logging.info("Loading options.json")
+        with open("/data/options.json") as f:
+            cfg = Config.from_dict(json.load(f))
+    elif os.path.exists("uxr-dev\\config.yaml"):
+        logging.info("Loading config.yaml")
+        with open("uxr-dev\\config.yaml") as f:
+            cfg = Config.from_dict(yaml.load(f, Loader=yaml.FullLoader)["options"])
+    else:
+        sys.exit("No config file found")
+    return cfg
+
+
+# MQTT
 def on_connect(client, userdata, flags, rc):
     global mqtt_connected
     logging.info("Connected to MQTT broker")
@@ -75,7 +99,7 @@ def on_message(client, userdata, msg):
                 )
                 return
 
-            rated_current = initialised_device_configs[serial_no]["rated_current"]
+            rated_current = initialised_device_configs[serial_no].rated_current
             if topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/altitude":
                 payload = float(msg.payload.decode())
                 module.set_altitude(payload, address, group)
@@ -88,11 +112,13 @@ def on_message(client, userdata, msg):
                 module.set_output_voltage(payload, address, group)
             elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/current_limit":
                 payload = float(msg.payload.decode())
+                if not rated_current:
+                    return
                 percentage = payload / rated_current
                 logging.info(
                     "Current limit set: {} for {}%".format(percentage, serial_no)
                 )
-                module.set_current_limit(percentage, address, group)
+                module.set_current_limit_fraction(percentage, address, group)
             elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/current":
                 payload = float(msg.payload.decode())
                 module.set_output_current(payload, address, group)
@@ -106,6 +132,7 @@ def on_message(client, userdata, msg):
                 client.publish(power_topic, payload)
 
 
+# Helpers
 def keep_all_alive_by_read_poll():
     for uxr_module in cfg.modules:
         module.get_input_power(uxr_module["CANBUS_ID"], uxr_module["GROUP_ID"])
@@ -133,9 +160,8 @@ def turn_on_single(serial_no, address, group):
         time.sleep(cfg.read_delay)
 
 
-# Function to read the serial number with retries
-def get_serial_number_with_retries(module, address, group):
-    for attempt in range(MAX_ATTEMPTS):
+def get_serial_number_with_retries(module, address, group, num_retries=1500):
+    for attempt in range(num_retries):
         serial_no = module.get_serial_number(address, group)
 
         if serial_no:  # If the serial number is successfully read
@@ -145,10 +171,24 @@ def get_serial_number_with_retries(module, address, group):
         logging.error(f"Attempt {attempt + 1} failed, retrying...")
         time.sleep(cfg.read_delay)
     # If all attempts fail, return None or raise an exception
-    logging.error(f"Failed to read serial number after {MAX_ATTEMPTS} attempts.")
+    logging.error(f"Failed to read serial number after {num_retries} attempts.")
     return None
 
 
+def read_device_defaults(address, group, serial_no) -> DeviceConfig:
+    rated_power = module.get_rated_output_power(address, group)
+    time.sleep(cfg.read_delay)
+    rated_current = module.get_rated_output_current(address, group)
+
+    logging.info(f"Serial No: {serial_no}")
+    logging.info(f"Address: {address} ")
+    logging.info(f"Rated Output Power: {rated_power} W")
+    logging.info(f"Rated Output Current: {rated_current} A")
+
+    return DeviceConfig(rated_power=rated_power, rated_current=rated_current)
+
+
+# Program Flow
 def exit_handler():
     logging.error("Script exiting")
     for uxr_module in cfg.modules:
@@ -212,7 +252,7 @@ def ha_discovery(serial_no):
             discovery_topic = f"{cfg.mqtt_ha_discovery_topic}/sensor/uxr_{serial_no}/{param.replace(' ', '_').lower()}/config"
             client.publish(discovery_topic, json.dumps(discovery_payload), retain=True)
 
-        rated_current = initialised_device_configs[serial_no]["rated_current"]
+        rated_current = initialised_device_configs[serial_no].rated_current
         settable_parameters = {
             "Current Limit": {
                 "min": 0,
@@ -286,21 +326,58 @@ def ha_discovery(serial_no):
         client.publish(availability_topic, "online")
 
 
-def read_device_defaults(address, group, serial_no):
-    rated_power = module.get_rated_output_power(address, group)
-    time.sleep(cfg.read_delay)
-    rated_current = module.get_rated_output_current(address, group)
+def init_mqtt(user, pwd, host, port) -> mqtt.Client:
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message = on_message
+    client.username_pw_set(username=user, password=pwd)
+    client.will_set(BRIDGE_AVAILABILITY_TOPIC, "offline", retain=True)
+    client.connect(host, port, 60)
+    client.loop_start()
+    return client
 
-    logging.info(f"Serial No: {serial_no}")
-    logging.info(f"Address: {address} ")
-    logging.info(f"Rated Output Power: {rated_power} W")
-    logging.info(f"Rated Output Current: {rated_current} A")
 
-    return {
-        "rated_power": rated_power,
-        "rated_current": rated_current,
-        "serial_no": serial_no,
-    }
+def startup_sequence(
+    turn_on_single,
+    get_serial_number_with_retries,
+    read_device_defaults,
+    cfg,
+    module,
+    expected_serial_num,
+    address,
+    group,
+) -> DeviceConfig:
+    while True:
+        logging.info("Switching on charger...")
+        turn_on_single(expected_serial_num, address, group)
+        logging.info("Switch On command sent")
+
+        serial_no = get_serial_number_with_retries(module, address, group)
+        if serial_no is None:
+            raise ValueError(f"Failed to read serial num for {expected_serial_num}.")
+        if serial_no != expected_serial_num:
+            raise ValueError(f"{serial_no=} found. {expected_serial_num=}")
+
+        time.sleep(cfg.read_delay)
+
+        device_defaults = read_device_defaults(address, group, serial_no)
+
+        if device_defaults.rated_current is None:
+            logging.error(f"Failed to read rated current for {serial_no}, retrying startup...")
+            time.sleep(cfg.scan_interval)
+            continue
+
+        time.sleep(cfg.read_delay)
+
+        module.set_current_limit_fraction(
+            cfg.default_current_limit / device_defaults.rated_current, address, group
+        )
+        time.sleep(cfg.read_delay)
+        logging.info(f"Setting default voltage for {serial_no} to {cfg.default_voltage}V")
+        module.set_output_voltage(cfg.default_voltage, address, group)
+
+        return device_defaults
 
 
 if __name__ == "__main__":
@@ -312,73 +389,41 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    if os.path.exists("/data/options.json"):
-        logging.info("Loading options.json")
-        with open("/data/options.json") as f:
-            cfg = Config.from_dict(json.load(f))
-    elif os.path.exists("uxr-dev\\config.yaml"):
-        logging.info("Loading config.yaml")
-        with open("uxr-dev\\config.yaml") as f:
-            cfg = Config.from_dict(yaml.load(f, Loader=yaml.FullLoader)["options"])
-    else:
-        sys.exit("No config file found")
-    logging.info(f"Config: {cfg}")
+    cfg = load_config()
+    logging.info(f"Loaded Config: {cfg}")
 
     BRIDGE_AVAILABILITY_TOPIC = f"{cfg.mqtt_base_topic}/bridge/availability"
 
     module = UXRChargerModule(channel=cfg.port)
-    initialised_device_configs: dict[str, dict[str, Any]] = {}
+    initialised_device_configs: dict[str, DeviceConfig] = {}
     mqtt_connected = False
 
     # Initialize MQTT client
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-    client.on_message = on_message
-    client.username_pw_set(username=cfg.mqtt_user, password=cfg.mqtt_password)
-    client.will_set(BRIDGE_AVAILABILITY_TOPIC, "offline", retain=True)
-    client.connect(cfg.mqtt_host, cfg.mqtt_port, 60)
-    client.loop_start()
+    client = init_mqtt(
+        user=cfg.mqtt_user,
+        pwd=cfg.mqtt_password,
+        host=cfg.mqtt_host,
+        port=cfg.mqtt_port,
+    )
+    logging.info("Done seting up MQTT client")
+    logging.info("Waiting 3 seconds for power stability before switching on chargers")
+    time.sleep(3)
 
-    logging.info("Waiting 5 seconds for power stability before switching on chargers")
-    time.sleep(5)
-    logging.info("Switching on chargers...")
-    turn_on_all()
-    logging.info("Chargers switched on")
-
-    MAX_ATTEMPTS = 1500
-
-    # Loop through each address in the list and create an entry in the devices dictionary
     for uxr_module in cfg.modules:
         address = uxr_module["CANBUS_ID"]
         group = uxr_module["GROUP_ID"]
-        expected_serial_no = uxr_module["SERIAL_NR"]
+        expected_serial_num = uxr_module["SERIAL_NR"]
 
-        serial_no = get_serial_number_with_retries(module, address, group)
-        if serial_no is None:
-            raise ValueError(f"Failed to read serial num after {MAX_ATTEMPTS=}.")
-        if serial_no != expected_serial_no:
-            raise ValueError(f"{serial_no=} found. {expected_serial_no=}")
-
-        time.sleep(cfg.read_delay)
-
-
-        device_defaults = read_device_defaults(address, group, serial_no)
-        initialised_device_configs[serial_no] = device_defaults
-
-        time.sleep(cfg.read_delay)
-
-        # set_device_defaults(address, group, read_)
-        # set defaults
-        if device_defaults["rated_current"]:
-            module.set_current_limit(
-                cfg.default_current_limit / device_defaults["rated_current"], address, group
-            )
-        time.sleep(cfg.read_delay)
-        logging.info(
-            f"Setting default voltage for {serial_no} to {cfg.default_voltage}V"
+        initialised_device_configs[expected_serial_num] = startup_sequence(
+            turn_on_single,
+            get_serial_number_with_retries,
+            read_device_defaults,
+            cfg,
+            module,
+            expected_serial_num=expected_serial_num,
+            address=address,
+            group=group,
         )
-        module.set_output_voltage(cfg.default_voltage, address, group)
 
     lock = threading.Lock()
 
@@ -395,8 +440,8 @@ if __name__ == "__main__":
                 logging.info(f"Serial: {serial_no}")
                 logging.info(f"Address: {address}")
                 alive = False
-                rated_current = initialised_device_configs[serial_no]["rated_current"]
-                rated_power = initialised_device_configs[serial_no]["rated_power"]
+                rated_current = initialised_device_configs[serial_no].rated_current
+                rated_power = initialised_device_configs[serial_no].rated_power
                 with lock:
                     keep_all_alive_by_read_poll()
                     voltage = module.get_module_voltage(address, group)
@@ -595,8 +640,15 @@ if __name__ == "__main__":
                         f"{cfg.mqtt_base_topic}_{serial_no}/availability", "offline"
                     )
                     with lock:
-                        turn_on_single(
-                            serial_no=serial_no, address=address, group=group
+                        initialised_device_configs[serial_no] = startup_sequence(
+                            turn_on_single,
+                            get_serial_number_with_retries,
+                            read_device_defaults,
+                            cfg,
+                            module,
+                            serial_no,
+                            address,
+                            group,
                         )
 
     except Exception as e:

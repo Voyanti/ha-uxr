@@ -147,8 +147,8 @@ class UXRChargerModule:
     def set_output_voltage(self, voltage, address, group):
         self.set_value(0x21, voltage, address, group, is_float=True)
 
-    def set_current_limit(self, current_limit, address, group):
-        self.set_value(0x22, current_limit, address, group, is_float=True)
+    def set_current_limit_fraction(self, current_limit_fraction, address, group):
+        self.set_value(0x22, current_limit_fraction, address, group, is_float=True)
 
     def set_max_voltage_setpoint(self, voltage, address, group):
         self.set_value(0x23, voltage, address, group, is_float=True)
