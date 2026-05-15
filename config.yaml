@@ -1,16 +1,13 @@
-name: "Voyanti UXR Addon"
-description: "Voyanti UXR Addon"
-image: ghcr.io/heinrich321/uxr_dev
-version: "1.0.10"
-slug: "uxr_dev"
-url: "https://github.com/heinrich321/voyanti-uxr-charger"
+name: "Voyanti UXR"
+description: "Voyanti UXR"
+image: ghcr.io/voyanti/ha-uxr
+version: "1.0.0"
+slug: "ha_uxr"
+url: "https://github.com/Voyanti/ha-uxr"
 init: false
 arch:
   - aarch64
   - amd64
-  - armhf
-  - armv7
-  - i386
 
 uart: true
 usb: true
