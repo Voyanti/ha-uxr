@@ -54,7 +54,10 @@ jobs:
       - name: Compare versions
         id: check_version
         run: |
-          if [ "$VERSION" = "$PREV_VERSION" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch. Forcing build."
+            echo "SKIP_BUILD=false" >> $GITHUB_ENV
+          elif [ "$VERSION" = "$PREV_VERSION" ]; then
             echo "Version not updated. Skipping build."
             echo "SKIP_BUILD=true" >> $GITHUB_ENV
           else
