@@ -7,7 +7,16 @@ class UXRChargerModule:
     protno = 0x060
 
     def __init__(self, channel, bitrate=125000):
+        self.channel = channel
+        self.bitrate = bitrate
         self.bus = can.interface.Bus(channel=channel, interface='slcan', bitrate=bitrate)
+
+    def reconnect(self):
+        try:
+            self.bus.shutdown()
+        except Exception:
+            pass
+        self.bus = can.interface.Bus(channel=self.channel, interface='slcan', bitrate=self.bitrate)
 
     def flush_buffer(self):
         """Flush any existing messages in the CAN buffer."""
@@ -53,9 +62,9 @@ class UXRChargerModule:
         arbitration_id = self.generate_can_arbitration_id(self.protno, 1, address, self.source_address, group)
         self.send_frame(arbitration_id, data)
         _, response_data = self.receive_frame()
-        if response_data and response_data[0] == 0x41 and is_float == True:
+        if response_data and response_data[0] == 0x41 and is_float:
             return round(self.bytes_to_float(response_data[4:8]), 2)
-        elif response_data and response_data[0] == 0x42 and is_float == False:
+        elif response_data and response_data[0] == 0x42 and not is_float:
             return struct.unpack('>I', response_data[4:8])[0]
         return None
 

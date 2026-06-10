@@ -177,6 +177,9 @@ def run() -> int:
                 break
             if app_proc.poll() is not None:
                 print(f"[test] app exited early rc={app_proc.returncode}")
+                out, _ = app_proc.communicate()
+                if out:
+                    print(f"[test] app output:\n{out}")
                 break
             time.sleep(0.2)
 
@@ -207,8 +210,8 @@ def run() -> int:
                 app_proc.kill()
                 out, _ = app_proc.communicate()
             if out:
-                tail = "\n".join(out.splitlines()[-15:])
-                print(f"[test] app tail output:\n{tail}")
+                tail = "\n".join(out.splitlines())
+                print(f"[test] app output:\n{tail}")
         broker.terminate()
         try:
             broker.wait(timeout=3)

@@ -68,15 +68,15 @@ def on_connect(client, userdata, flags, rc):
     logging.info("Connected to MQTT broker")
     mqtt_connected = True
     client.publish(BRIDGE_AVAILABILITY_TOPIC, "online", retain=True)
-    for uxr_module in cfg.modules:
+    for uxr_module in app_config.modules:
         serial_no = uxr_module["SERIAL_NR"]
         client.subscribe(
             [
-                (f"{cfg.mqtt_base_topic}/{serial_no}/set/group_id", 0),
-                (f"{cfg.mqtt_base_topic}/{serial_no}/set/output_voltage", 0),
-                (f"{cfg.mqtt_base_topic}/{serial_no}/set/current_limit", 0),
-                (f"{cfg.mqtt_base_topic}/{serial_no}/set/current", 0),
-                (f"{cfg.mqtt_base_topic}/{serial_no}/set/power", 0),
+                (f"{app_config.mqtt_base_topic}/{serial_no}/set/group_id", 0),
+                (f"{app_config.mqtt_base_topic}/{serial_no}/set/output_voltage", 0),
+                (f"{app_config.mqtt_base_topic}/{serial_no}/set/current_limit", 0),
+                (f"{app_config.mqtt_base_topic}/{serial_no}/set/current", 0),
+                (f"{app_config.mqtt_base_topic}/{serial_no}/set/power", 0),
             ]
         )
 
@@ -94,7 +94,7 @@ def on_disconnect(client, userdata, rc):
 def on_message(client, userdata, msg):
     with lock:
         topic = msg.topic
-        for uxr_module in cfg.modules:
+        for uxr_module in app_config.modules:
             serial_no = uxr_module["SERIAL_NR"]
             address = uxr_module["CANBUS_ID"]
             group = uxr_module["GROUP_ID"]
@@ -105,17 +105,17 @@ def on_message(client, userdata, msg):
                 return
 
             rated_current = initialised_device_configs[serial_no].rated_current
-            if topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/altitude":
+            if topic == f"{app_config.mqtt_base_topic}/{serial_no}/set/altitude":
                 payload = float(msg.payload.decode())
-                module.set_altitude(payload, address, group)
-            elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/group_id":
+                can_client.set_altitude(payload, address, group)
+            elif topic == f"{app_config.mqtt_base_topic}/{serial_no}/set/group_id":
                 payload = float(msg.payload.decode())
-                module.set_group_id(int(payload), address)
-            elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/output_voltage":
+                can_client.set_group_id(int(payload), address)
+            elif topic == f"{app_config.mqtt_base_topic}/{serial_no}/set/output_voltage":
                 payload = float(msg.payload.decode())
                 logging.info(f"Setting output voltage for {serial_no} to {payload}")
-                module.set_output_voltage(payload, address, group)
-            elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/current_limit":
+                can_client.set_output_voltage(payload, address, group)
+            elif topic == f"{app_config.mqtt_base_topic}/{serial_no}/set/current_limit":
                 payload = float(msg.payload.decode())
                 if not rated_current:
                     return
@@ -123,25 +123,25 @@ def on_message(client, userdata, msg):
                 logging.info(
                     "Current limit set: {} for {}%".format(percentage, serial_no)
                 )
-                module.set_current_limit_fraction(percentage, address, group)
-            elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/current":
+                can_client.set_current_limit_fraction(percentage, address, group)
+            elif topic == f"{app_config.mqtt_base_topic}/{serial_no}/set/current":
                 payload = float(msg.payload.decode())
-                module.set_output_current(payload, address, group)
-            elif topic == f"{cfg.mqtt_base_topic}/{serial_no}/set/power":
+                can_client.set_output_current(payload, address, group)
+            elif topic == f"{app_config.mqtt_base_topic}/{serial_no}/set/power":
                 payload = int(msg.payload.decode())
                 if payload:
-                    module.power_on_off(0x00000000, address, group)
+                    can_client.power_on_off(0x00000000, address, group)
                 else:
-                    module.power_on_off(0x00010000, address, group)
-                power_topic = f"{cfg.mqtt_base_topic}/{serial_no}/power"
+                    can_client.power_on_off(0x00010000, address, group)
+                power_topic = f"{app_config.mqtt_base_topic}/{serial_no}/power"
                 client.publish(power_topic, payload)
 
 
 # Helpers
 def keep_all_alive_by_read_poll():
-    for uxr_module in cfg.modules:
-        module.get_input_power(uxr_module["CANBUS_ID"], uxr_module["GROUP_ID"])
-        time.sleep(cfg.read_delay)
+    for uxr_module in app_config.modules:
+        can_client.get_input_power(uxr_module["CANBUS_ID"], uxr_module["GROUP_ID"])
+        time.sleep(app_config.read_delay)
 
 
 def read_publish(getter, suffix, serial_no, address, group, transform=None):
@@ -152,34 +152,32 @@ def read_publish(getter, suffix, serial_no, address, group, transform=None):
             return None
         if transform is not None:
             value = transform(value)
-        client.publish(f"{cfg.mqtt_base_topic}/{serial_no}/{suffix}", value)
+        client.publish(f"{app_config.mqtt_base_topic}/{serial_no}/{suffix}", value)
         logging.info(f"{suffix}: {value}")
     return value
 
 
-def turn_on_all():
+def turn_on_all(app_cfg: Config):
+    """Switch on all devices
+        timing reality: sending turn on cmd to one charger 5 times does not work, 
+        but sending 5 times while cycling through chargers work 
+        - might be beacause a delay is needed but we don't have the luxury of experimeting 
+        so send turn on command to all before the startup sequence
+    """
     for i in range(0, 5):
         time.sleep(1)
-        for uxr_module in cfg.modules:
+        for uxr_module in app_cfg.modules:
             serial_no = uxr_module["SERIAL_NR"]
             address = uxr_module["CANBUS_ID"]
-            client.publish(f"{cfg.mqtt_base_topic}_{serial_no}/availability", "offline")
+            client.publish(f"{app_cfg.mqtt_base_topic}_{serial_no}/availability", "offline")
             logging.info(f"Switching on Serial: {serial_no} on Canbus ID: {address}")
-            module.power_on_off(0x00000000, address, uxr_module["GROUP_ID"])
-            time.sleep(cfg.read_delay)
+            can_client.power_on_off(0x00000000, address, uxr_module["GROUP_ID"])
+            time.sleep(app_cfg.read_delay)
 
-
-def turn_on_single(serial_no, address, group):
-    for i in range(0, 5):
-        time.sleep(1)
-        client.publish(f"{cfg.mqtt_base_topic}_{serial_no}/availability", "offline")
-        logging.info(f"Switching on Serial: {serial_no} on Canbus ID: {address}")
-        module.power_on_off(0x00000000, address, group)
-        time.sleep(cfg.read_delay)
 
 
 def get_serial_number_with_retries(module, address, group, num_retries=3):
-    for attempt in range(1, num_retries+1):
+    for attempt in range(1, num_retries + 1):
         serial_no = module.get_serial_number(address, group)
 
         if serial_no:  # If the serial number is successfully read
@@ -187,16 +185,16 @@ def get_serial_number_with_retries(module, address, group, num_retries=3):
 
         # Log the attempt and wait before retrying
         logging.error(f"Serial read {attempt=} failed, retrying...")
-        time.sleep(cfg.read_delay)
+        time.sleep(app_config.read_delay)
     # If all attempts fail, return None or raise an exception
     logging.error(f"Failed to read serial number after {num_retries} attempts.")
     return None
 
 
 def read_device_defaults(address, group, serial_no) -> DeviceConfig:
-    rated_power = module.get_rated_output_power(address, group)
-    time.sleep(cfg.read_delay)
-    rated_current = module.get_rated_output_current(address, group)
+    rated_power = can_client.get_rated_output_power(address, group)
+    time.sleep(app_config.read_delay)
+    rated_current = can_client.get_rated_output_current(address, group)
 
     logging.info(f"Serial No: {serial_no}")
     logging.info(f"Address: {address} ")
@@ -209,16 +207,16 @@ def read_device_defaults(address, group, serial_no) -> DeviceConfig:
 # Program Flow
 def exit_handler():
     logging.error("Script exiting")
-    for uxr_module in cfg.modules:
+    for uxr_module in app_config.modules:
         serial_no = uxr_module["SERIAL_NR"]
-        client.publish(f"{cfg.mqtt_base_topic}_{serial_no}/availability", "offline")
+        client.publish(f"{app_config.mqtt_base_topic}_{serial_no}/availability", "offline")
     client.publish(BRIDGE_AVAILABILITY_TOPIC, "offline", retain=True)
     client.loop_stop()
 
 
 # HA Discovery Function
 def ha_discovery(serial_no):
-    if cfg.mqtt_ha_discovery:
+    if app_config.mqtt_ha_discovery:
         logging.info("Publishing HA Discovery topics...")
         device = {
             "manufacturer": "UXR",
@@ -227,7 +225,7 @@ def ha_discovery(serial_no):
             "name": f"UXR Charger {serial_no}",
         }
 
-        availability_topic = f"{cfg.mqtt_base_topic}_{serial_no}/availability"
+        availability_topic = f"{app_config.mqtt_base_topic}_{serial_no}/availability"
         availability_block = {
             "availability": [
                 {"topic": availability_topic},
@@ -261,13 +259,13 @@ def ha_discovery(serial_no):
             discovery_payload = {
                 "name": param,
                 "unique_id": f"uxr_{serial_no}_{param.replace(' ', '_').lower()}",
-                "state_topic": f"{cfg.mqtt_base_topic}/{serial_no}/{param.replace(' ', '_').lower()}",
+                "state_topic": f"{app_config.mqtt_base_topic}/{serial_no}/{param.replace(' ', '_').lower()}",
                 "device": device,
                 "device_class": details.get("device_class"),
                 "unit_of_measurement": details.get("unit"),
                 **availability_block,
             }
-            discovery_topic = f"{cfg.mqtt_ha_discovery_topic}/sensor/uxr_{serial_no}/{param.replace(' ', '_').lower()}/config"
+            discovery_topic = f"{app_config.mqtt_ha_discovery_topic}/sensor/uxr_{serial_no}/{param.replace(' ', '_').lower()}/config"
             client.publish(discovery_topic, json.dumps(discovery_payload), retain=True)
 
         rated_current = initialised_device_configs[serial_no].rated_current
@@ -277,28 +275,28 @@ def ha_discovery(serial_no):
                 "max": rated_current,
                 "step": 0.1,
                 "unit": "A",
-                "command_topic": f"{cfg.mqtt_base_topic}/{serial_no}/set/current_limit",
+                "command_topic": f"{app_config.mqtt_base_topic}/{serial_no}/set/current_limit",
             },
             "Output Voltage": {
                 "min": 735,
                 "max": 810,
                 "step": 0.1,
                 "unit": "V",
-                "command_topic": f"{cfg.mqtt_base_topic}/{serial_no}/set/output_voltage",
+                "command_topic": f"{app_config.mqtt_base_topic}/{serial_no}/set/output_voltage",
             },
             "Output Current": {
                 "min": 0,
                 "max": rated_current,
                 "step": 0.1,
                 "unit": "A",
-                "command_topic": f"{cfg.mqtt_base_topic}/{serial_no}/set/current",
+                "command_topic": f"{app_config.mqtt_base_topic}/{serial_no}/set/current",
             },
             "Altitude": {
                 "min": 0,
                 "max": 5000,
                 "step": 100,
                 "unit": "m",
-                "command_topic": f"{cfg.mqtt_base_topic}/{serial_no}/set/altitude",
+                "command_topic": f"{app_config.mqtt_base_topic}/{serial_no}/set/altitude",
             },
         }
 
@@ -314,12 +312,12 @@ def ha_discovery(serial_no):
                 "device": device,
                 **availability_block,
             }
-            discovery_topic = f"{cfg.mqtt_ha_discovery_topic}/number/uxr_{serial_no}/{param.replace(' ', '_').lower()}/config"
+            discovery_topic = f"{app_config.mqtt_ha_discovery_topic}/number/uxr_{serial_no}/{param.replace(' ', '_').lower()}/config"
             client.publish(discovery_topic, json.dumps(discovery_payload), retain=True)
 
         switch_name = "power"
-        command_topic = f"{cfg.mqtt_base_topic}/{serial_no}/set/{switch_name.lower()}"
-        state_topic = f"{cfg.mqtt_base_topic}/{serial_no}/{switch_name.lower()}"
+        command_topic = f"{app_config.mqtt_base_topic}/{serial_no}/set/{switch_name.lower()}"
+        state_topic = f"{app_config.mqtt_base_topic}/{serial_no}/{switch_name.lower()}"
         unique_id = f"uxr_{serial_no}_{switch_name.lower()}"
 
         discovery_payload = {
@@ -335,10 +333,10 @@ def ha_discovery(serial_no):
             **availability_block,
         }
 
-        discovery_topic = f"{cfg.mqtt_ha_discovery_topic}/switch/uxr_{serial_no}/{switch_name.lower()}/config"
+        discovery_topic = f"{app_config.mqtt_ha_discovery_topic}/switch/uxr_{serial_no}/{switch_name.lower()}/config"
         client.publish(discovery_topic, json.dumps(discovery_payload), retain=True)
 
-        state_topic = f"{cfg.mqtt_base_topic}/{serial_no}/{switch_name.lower()}"
+        state_topic = f"{app_config.mqtt_base_topic}/{serial_no}/{switch_name.lower()}"
         client.publish(state_topic, 1)
 
         client.publish(availability_topic, "online")
@@ -357,46 +355,61 @@ def init_mqtt(user, pwd, host, port) -> mqtt.Client:
 
 
 def startup_sequence(
-    turn_on_single,
+    turn_on_all,
     get_serial_number_with_retries,
     read_device_defaults,
-    cfg,
-    module,
-    expected_serial_num,
-    address,
-    group,
-) -> DeviceConfig:
-    while True:
-        logging.info("Switching on charger...")
-        turn_on_single(expected_serial_num, address, group)
-        logging.info("Switch On command sent")
+    cfg: Config,
+    lib: UXRChargerModule,
+) -> dict[str, DeviceConfig]:
+    configs_read: dict[str, DeviceConfig] = {}
 
-        serial_no = get_serial_number_with_retries(module, address, group)
-        if serial_no is None:
-            logging.warning(f"Failed to read serial num for {expected_serial_num}, retrying startup...")
-            continue
-        if serial_no != expected_serial_num:
-            raise ValueError(f"{serial_no=} found. {expected_serial_num=}")
+    logging.info("Switching on all chargers...")
+    turn_on_all(app_config)
+    logging.info("Switch On command sent")
 
-        time.sleep(cfg.read_delay)
+    for uxr_module in cfg.modules:
+        address = uxr_module["CANBUS_ID"]
+        group = uxr_module["GROUP_ID"]
+        expected_serial_num = uxr_module["SERIAL_NR"]
 
-        device_defaults = read_device_defaults(address, group, serial_no)
+        while True:
+            time.sleep(1)
 
-        if device_defaults.rated_current is None:
-            logging.error(f"Failed to read rated current for {serial_no}, retrying startup...")
-            time.sleep(cfg.scan_interval)
-            continue
+            serial_no = get_serial_number_with_retries(lib, address, group)
+            if serial_no is None:
+                logging.warning(
+                    f"Failed to read serial num for {expected_serial_num}, retrying startup..."
+                )
+                continue
+            if serial_no != expected_serial_num:
+                raise ValueError(f"{serial_no=} found. {expected_serial_num=}")
 
-        time.sleep(cfg.read_delay)
+            time.sleep(cfg.read_delay)
 
-        module.set_current_limit_fraction(
-            cfg.default_current_limit / device_defaults.rated_current, address, group
-        )
-        time.sleep(cfg.read_delay)
-        logging.info(f"Setting default voltage for {serial_no} to {cfg.default_voltage}V")
-        module.set_output_voltage(cfg.default_voltage, address, group)
+            device_defaults = read_device_defaults(address, group, serial_no)
 
-        return device_defaults
+            if device_defaults.rated_current is None:
+                logging.error(
+                    f"Failed to read rated current for {serial_no}, retrying startup..."
+                )
+                time.sleep(cfg.scan_interval)
+                continue
+
+            time.sleep(cfg.read_delay)
+
+            lib.set_current_limit_fraction(
+                cfg.default_current_limit / device_defaults.rated_current, address, group
+            )
+            time.sleep(cfg.read_delay)
+            logging.info(
+                f"Setting default voltage for {serial_no} to {cfg.default_voltage}V"
+            )
+            lib.set_output_voltage(cfg.default_voltage, address, group)
+
+            configs_read[expected_serial_num] = device_defaults
+            break
+
+    return configs_read
 
 
 if __name__ == "__main__":
@@ -408,50 +421,42 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    cfg = load_config()
-    logging.info(f"Loaded Config: {cfg}")
+    app_config = load_config()
+    logging.info(f"Loaded Config: {app_config}")
 
-    BRIDGE_AVAILABILITY_TOPIC = f"{cfg.mqtt_base_topic}/bridge/availability"
+    BRIDGE_AVAILABILITY_TOPIC = f"{app_config.mqtt_base_topic}/bridge/availability"
 
-    module = UXRChargerModule(channel=cfg.port)
+    can_client = UXRChargerModule(channel=app_config.port)
     initialised_device_configs: dict[str, DeviceConfig] = {}
     mqtt_connected = False
 
     # Initialize MQTT client
     client = init_mqtt(
-        user=cfg.mqtt_user,
-        pwd=cfg.mqtt_password,
-        host=cfg.mqtt_host,
-        port=cfg.mqtt_port,
+        user=app_config.mqtt_user,
+        pwd=app_config.mqtt_password,
+        host=app_config.mqtt_host,
+        port=app_config.mqtt_port,
     )
     logging.info("Done seting up MQTT client")
     logging.info("Waiting 3 seconds for power stability before switching on chargers")
     time.sleep(3)
 
-    for uxr_module in cfg.modules:
-        address = uxr_module["CANBUS_ID"]
-        group = uxr_module["GROUP_ID"]
-        expected_serial_num = uxr_module["SERIAL_NR"]
-
-        initialised_device_configs[expected_serial_num] = startup_sequence(
-            turn_on_single,
-            get_serial_number_with_retries,
-            read_device_defaults,
-            cfg,
-            module,
-            expected_serial_num=expected_serial_num,
-            address=address,
-            group=group,
-        )
+    initialised_device_configs = startup_sequence(
+        turn_on_all,
+        get_serial_number_with_retries,
+        read_device_defaults,
+        app_config,
+        can_client,
+    )
 
     lock = threading.Lock()
 
     # Main loop to continuously read parameters
     try:
-        for uxr_module in cfg.modules:
+        for uxr_module in app_config.modules:
             ha_discovery(uxr_module["SERIAL_NR"])
         while True:
-            for uxr_module in cfg.modules:
+            for uxr_module in app_config.modules:
                 serial_no = uxr_module["SERIAL_NR"]
                 address = uxr_module["CANBUS_ID"]
                 group = uxr_module["GROUP_ID"]
@@ -462,34 +467,47 @@ if __name__ == "__main__":
                 rated_power = initialised_device_configs[serial_no].rated_power
 
                 readings = [
-                    (module.get_module_voltage, "module_voltage", None),
-                    (module.get_module_current, "module_current", None),
-                    (module.get_module_current_limit, "current_limit",
-                        lambda v: round(v * rated_current, 2)),
-                    (module.get_temperature_dc_board, "temperature_of_dc_board", None),
-                    (module.get_input_phase_voltage, "input_phase_voltage", None),
-                    (module.get_pfc0_voltage, "pfc0_voltage", None),
-                    (module.get_pfc1_voltage, "pfc1_voltage", None),
-                    (module.get_panel_board_temperature, "panel_board_temperature", None),
-                    (module.get_voltage_phase_a, "voltage_phase_a", None),
-                    (module.get_voltage_phase_b, "voltage_phase_b", None),
-                    (module.get_voltage_phase_c, "voltage_phase_c", None),
-                    (module.get_temperature_pfc_board, "temperature_of_pfc_board", None),
-                    (module.get_input_power, "input_power", None),
-                    (module.get_current_altitude_value, "current_altitude", None),
-                    (module.get_input_working_mode, "input_working_mode", None),
+                    (can_client.get_module_voltage, "module_voltage", None),
+                    (can_client.get_module_current, "module_current", None),
+                    (
+                        can_client.get_module_current_limit,
+                        "current_limit",
+                        lambda v: round(v * rated_current, 2),
+                    ),
+                    (can_client.get_temperature_dc_board, "temperature_of_dc_board", None),
+                    (can_client.get_input_phase_voltage, "input_phase_voltage", None),
+                    (can_client.get_pfc0_voltage, "pfc0_voltage", None),
+                    (can_client.get_pfc1_voltage, "pfc1_voltage", None),
+                    (
+                        can_client.get_panel_board_temperature,
+                        "panel_board_temperature",
+                        None,
+                    ),
+                    (can_client.get_voltage_phase_a, "voltage_phase_a", None),
+                    (can_client.get_voltage_phase_b, "voltage_phase_b", None),
+                    (can_client.get_voltage_phase_c, "voltage_phase_c", None),
+                    (
+                        can_client.get_temperature_pfc_board,
+                        "temperature_of_pfc_board",
+                        None,
+                    ),
+                    (can_client.get_input_power, "input_power", None),
+                    (can_client.get_current_altitude_value, "current_altitude", None),
+                    (can_client.get_input_working_mode, "input_working_mode", None),
                 ]
 
                 alive = False
                 failed_reads = 0
                 too_many_failures = False
                 for getter, suffix, transform in readings:
-                    value = read_publish(getter, suffix, serial_no, address, group, transform)
+                    value = read_publish(
+                        getter, suffix, serial_no, address, group, transform
+                    )
                     if value is not None:
                         alive = True
                         if suffix == "input_power":
                             client.publish(
-                                f"{cfg.mqtt_base_topic}/{serial_no}/power",
+                                f"{app_config.mqtt_base_topic}/{serial_no}/power",
                                 1 if value > 0 else 0,
                             )
                     else:
@@ -500,32 +518,30 @@ if __name__ == "__main__":
                             )
                             too_many_failures = True
                             break
-                    time.sleep(cfg.read_delay)
+                    time.sleep(app_config.read_delay)
 
                 client.publish(
-                    f"{cfg.mqtt_base_topic}/{serial_no}/rated_current", rated_current
+                    f"{app_config.mqtt_base_topic}/{serial_no}/rated_current", rated_current
                 )
                 client.publish(
-                    f"{cfg.mqtt_base_topic}/{serial_no}/rated_power", rated_power
+                    f"{app_config.mqtt_base_topic}/{serial_no}/rated_power", rated_power
                 )
                 if alive and not too_many_failures:
                     client.publish(
-                        f"{cfg.mqtt_base_topic}_{serial_no}/availability", "online"
+                        f"{app_config.mqtt_base_topic}_{serial_no}/availability", "online"
                     )
                 else:
                     client.publish(
-                        f"{cfg.mqtt_base_topic}_{serial_no}/availability", "offline"
+                        f"{app_config.mqtt_base_topic}_{serial_no}/availability", "offline"
                     )
                     with lock:
-                        initialised_device_configs[serial_no] = startup_sequence(
-                            turn_on_single,
+                        can_client.reconnect()
+                        initialised_device_configs = startup_sequence(
+                            turn_on_all,
                             get_serial_number_with_retries,
                             read_device_defaults,
-                            cfg,
-                            module,
-                            serial_no,
-                            address,
-                            group,
+                            app_config,
+                            can_client,
                         )
 
     except Exception as e:
